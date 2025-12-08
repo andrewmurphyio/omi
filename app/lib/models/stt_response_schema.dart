@@ -83,6 +83,26 @@ class SttResponseSchema {
     textPath: 'channel.alternatives[0].transcript',
   );
 
+  /// AssemblyAI polling response format
+  static const assemblyai = SttResponseSchema(
+    segmentsPath: 'words',
+    segmentsTextField: 'text',
+    segmentsStartField: 'start',
+    segmentsEndField: 'end',
+    segmentsSpeakerField: 'speaker',
+    textPath: 'text',
+  );
+
+  /// AssemblyAI live WebSocket response format
+  static const assemblyaiLive = SttResponseSchema(
+    segmentsPath: 'words',
+    segmentsTextField: 'text',
+    segmentsStartField: 'start',
+    segmentsEndField: 'end',
+    segmentsSpeakerField: 'speaker',
+    textPath: 'text',
+  );
+
   /// Gemini Live WebSocket response format
   static const geminiLive = SttResponseSchema(
     segmentsPath: null,
@@ -92,12 +112,13 @@ class SttResponseSchema {
   );
 
   /// Template names that are live/streaming
-  static const Set<String> liveTemplates = {'Deepgram', 'Google Gemini'};
+  static const Set<String> liveTemplates = {'Deepgram', 'AssemblyAI', 'Google Gemini'};
 
   /// Available templates for custom STT configuration
   static const Map<String, SttResponseSchema> templates = {
     'OpenAI': openAI,
     'Deepgram': deepgramLive,
+    'AssemblyAI': assemblyaiLive,
     'Fal.AI': falAI,
     'Google Gemini': geminiLive,
     'Whisper': openAI,

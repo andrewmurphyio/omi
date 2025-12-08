@@ -18,6 +18,7 @@ class STTService(str, Enum):
     deepgram = "deepgram"
     soniox = "soniox"
     speechmatics = "speechmatics"
+    assemblyai = "assemblyai"
 
     @staticmethod
     def get_model_name(value):
@@ -27,6 +28,8 @@ class STTService(str, Enum):
             return 'soniox_streaming'
         elif value == STTService.speechmatics:
             return 'speechmatics_streaming'
+        elif value == STTService.assemblyai:
+            return 'assemblyai_streaming'
 
 
 # Languages supported by Soniox
@@ -176,7 +179,34 @@ deepgram_nova3_multi_languages = [
     "nl-BE",
 ]
 
-# Supported values: soniox-stt-rt,dg-nova-3,dg-nova-2
+# Languages supported by AssemblyAI
+# AssemblyAI supports these languages for real-time streaming
+assemblyai_supported_languages = {
+    'en',
+    'en_us',
+    'en_uk',
+    'en_au',
+    'es',
+    'fr',
+    'de',
+    'it',
+    'pt',
+    'nl',
+    'hi',
+    'ja',
+    'zh',
+    'fi',
+    'ko',
+    'pl',
+    'ru',
+    'tr',
+    'uk',
+    'vi',
+}
+# AssemblyAI models
+assemblyai_models = ['best', 'nano']
+
+# Supported values: soniox-stt-rt,dg-nova-3,dg-nova-2,assemblyai-best,assemblyai-nano
 stt_service_models = os.getenv('STT_SERVICE_MODELS', 'dg-nova-3').split(',')
 
 
@@ -197,6 +227,14 @@ def get_stt_service_for_language(language: str):
                 return STTService.deepgram, 'multi', 'nova-2-general'
             if language in deepgram_supported_languages:
                 return STTService.deepgram, language, 'nova-2-general'
+        # AssemblyAI Best
+        elif m == 'assemblyai-best':
+            if language in assemblyai_supported_languages:
+                return STTService.assemblyai, language, 'best'
+        # AssemblyAI Nano
+        elif m == 'assemblyai-nano':
+            if language in assemblyai_supported_languages:
+                return STTService.assemblyai, language, 'nano'
 
     # Fallback to DeepGram Nova-2 en
     return STTService.deepgram, 'en', 'nova-2-general'
@@ -393,6 +431,169 @@ def connect_to_deepgram(on_message, on_error, language: str, sample_rate: int, c
         raise Exception(f'Could not open socket: WebSocketException {e}')
     except Exception as e:
         raise Exception(f'Could not open socket: {e}')
+
+
+async def process_audio_assemblyai(
+    stream_transcript,
+    language: str,
+    sample_rate: int,
+    preseconds: int = 0,
+    model: str = 'best',
+):
+    """
+    Process audio using AssemblyAI real-time transcription.
+
+    AssemblyAI real-time transcription supports:
+    - Speaker diarization
+    - Multiple languages
+    - Word-level timestamps
+    """
+    print('process_audio_assemblyai', language, sample_rate, preseconds, model)
+
+    api_key = os.getenv('ASSEMBLYAI_API_KEY')
+    if not api_key:
+        raise ValueError("AssemblyAI API key is not set. Please set the ASSEMBLYAI_API_KEY environment variable.")
+
+    # AssemblyAI WebSocket URL
+    uri = 'wss://api.assemblyai.com/v2/realtime/ws'
+
+    # Build the WebSocket URL with parameters
+    params = {
+        'sample_rate': sample_rate,
+        'word_boost': '[]',
+        'encoding': 'pcm_s16le',
+    }
+
+    # Set speech model based on model parameter
+    if model == 'nano':
+        params['speech_model'] = 'nano'
+    else:
+        params['speech_model'] = 'best'
+
+    # Add language if specified (AssemblyAI uses language codes without hyphens)
+    if language and language != 'en':
+        # Convert language code format (e.g., en-US -> en_us)
+        lang_code = language.lower().replace('-', '_')
+        params['language_code'] = lang_code
+
+    query_string = '&'.join([f'{k}={v}' for k, v in params.items()])
+    full_uri = f'{uri}?{query_string}'
+
+    try:
+        print("Connecting to AssemblyAI WebSocket...")
+        assemblyai_socket = await websockets.connect(
+            full_uri,
+            extra_headers={'Authorization': api_key},
+            ping_timeout=10,
+            ping_interval=10,
+        )
+        print("Connected to AssemblyAI WebSocket.")
+
+        # Variables to track current segment
+        current_segment = None
+        current_segment_time = None
+        current_speaker = None
+
+        async def on_message():
+            nonlocal current_segment, current_segment_time, current_speaker
+            try:
+                async for message in assemblyai_socket:
+                    response = json.loads(message)
+
+                    # Handle different message types
+                    message_type = response.get('message_type')
+
+                    if message_type == 'SessionBegins':
+                        print(f"AssemblyAI session started: {response.get('session_id')}")
+                        continue
+
+                    if message_type == 'SessionTerminated':
+                        print("AssemblyAI session terminated")
+                        break
+
+                    if message_type == 'PartialTranscript':
+                        # Skip partial transcripts for now (only process final)
+                        continue
+
+                    if message_type == 'FinalTranscript':
+                        text = response.get('text', '')
+                        if not text.strip():
+                            continue
+
+                        words = response.get('words', [])
+                        if not words:
+                            continue
+
+                        current_time = time.time()
+                        segments = []
+
+                        for word_data in words:
+                            word_text = word_data.get('text', '')
+                            word_start = word_data.get('start', 0) / 1000.0  # Convert ms to seconds
+                            word_end = word_data.get('end', 0) / 1000.0
+                            speaker = word_data.get('speaker', 'A')
+
+                            # Skip if within preseconds
+                            if preseconds > 0 and word_start < preseconds:
+                                continue
+
+                            # Adjust timing for preseconds
+                            if preseconds > 0:
+                                word_start -= preseconds
+                                word_end -= preseconds
+
+                            is_user = speaker == 'A' and preseconds > 0
+                            speaker_label = f"SPEAKER_{ord(speaker) - ord('A')}" if speaker else "SPEAKER_0"
+
+                            if not segments:
+                                segments.append({
+                                    'speaker': speaker_label,
+                                    'start': word_start,
+                                    'end': word_end,
+                                    'text': word_text,
+                                    'is_user': is_user,
+                                    'person_id': None,
+                                })
+                            else:
+                                last_segment = segments[-1]
+                                if last_segment['speaker'] == speaker_label:
+                                    last_segment['text'] += f" {word_text}"
+                                    last_segment['end'] = word_end
+                                else:
+                                    segments.append({
+                                        'speaker': speaker_label,
+                                        'start': word_start,
+                                        'end': word_end,
+                                        'text': word_text,
+                                        'is_user': is_user,
+                                        'person_id': None,
+                                    })
+
+                        if segments:
+                            stream_transcript(segments)
+
+                    elif message_type == 'error':
+                        error_msg = response.get('error', 'Unknown error')
+                        print(f"AssemblyAI error: {error_msg}")
+                        raise Exception(f"AssemblyAI error: {error_msg}")
+
+            except websockets.exceptions.ConnectionClosedOK:
+                print("AssemblyAI connection closed normally.")
+            except Exception as e:
+                print(f"Error receiving from AssemblyAI: {e}")
+            finally:
+                if not assemblyai_socket.closed:
+                    await assemblyai_socket.close()
+                    print("AssemblyAI WebSocket closed in on_message.")
+
+        # Start the message handler
+        asyncio.create_task(on_message())
+
+        return assemblyai_socket
+
+    except Exception as e:
+        print(f"Exception in process_audio_assemblyai: {e}")
+        raise
 
 
 async def process_audio_soniox(

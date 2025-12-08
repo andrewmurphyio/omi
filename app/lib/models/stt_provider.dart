@@ -7,6 +7,8 @@ enum SttProvider {
   openai,
   deepgram,
   deepgramLive,
+  assemblyai,
+  assemblyaiLive,
   falai,
   gemini,
   geminiLive,
@@ -95,6 +97,26 @@ class SttLanguages {
     'pl',
     'tr',
     'id'
+  ];
+
+  static const List<String> assemblyaiSupported = [
+    'en',
+    'es',
+    'fr',
+    'de',
+    'it',
+    'pt',
+    'nl',
+    'hi',
+    'ja',
+    'zh',
+    'fi',
+    'ko',
+    'pl',
+    'ru',
+    'tr',
+    'uk',
+    'vi'
   ];
 
   static const List<String> geminiSupported = ['en', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'ko', 'zh', 'ar', 'hi', 'ru'];
@@ -187,6 +209,36 @@ class SttProviderConfig {
       responseSchema: SttResponseSchema.deepgramLive,
       apiKeyUrl: 'https://console.deepgram.com/',
       docsUrl: 'https://developers.deepgram.com/docs/models-languages-overview',
+    ),
+    SttProvider.assemblyai: SttProviderConfig(
+      provider: SttProvider.assemblyai,
+      displayName: 'AssemblyAI',
+      description: 'AssemblyAI - Fast & accurate (polling)',
+      icon: FontAwesomeIcons.microphone,
+      requiresApiKey: true,
+      requestType: SttRequestType.rawBinary,
+      supportedLanguages: SttLanguages.assemblyaiSupported,
+      supportedModels: const ['best', 'nano'],
+      defaultLanguage: 'en',
+      defaultModel: 'best',
+      responseSchema: SttResponseSchema.assemblyai,
+      apiKeyUrl: 'https://www.assemblyai.com/dashboard/',
+      docsUrl: 'https://www.assemblyai.com/docs',
+    ),
+    SttProvider.assemblyaiLive: SttProviderConfig(
+      provider: SttProvider.assemblyaiLive,
+      displayName: 'AssemblyAI',
+      description: 'AssemblyAI - Real-time streaming',
+      icon: FontAwesomeIcons.boltLightning,
+      requiresApiKey: true,
+      requestType: SttRequestType.streaming,
+      supportedLanguages: SttLanguages.assemblyaiSupported,
+      supportedModels: const ['best', 'nano'],
+      defaultLanguage: 'en',
+      defaultModel: 'best',
+      responseSchema: SttResponseSchema.assemblyaiLive,
+      apiKeyUrl: 'https://www.assemblyai.com/dashboard/',
+      docsUrl: 'https://www.assemblyai.com/docs/getting-started/real-time',
     ),
     SttProvider.falai: SttProviderConfig(
       provider: SttProvider.falai,
@@ -282,6 +334,7 @@ class SttProviderConfig {
   static const _visibleProviders = [
     SttProvider.openai,
     SttProvider.deepgramLive,
+    SttProvider.assemblyaiLive,
     SttProvider.geminiLive,
     SttProvider.localWhisper,
     SttProvider.customLive,
@@ -290,7 +343,7 @@ class SttProviderConfig {
   static List<SttProviderConfig> get allProviders => _visibleProviders.map((p) => get(p)).toList();
 
   /// Template names that are live/streaming
-  static const Set<String> liveRequestTemplates = {'Deepgram', 'Google Gemini'};
+  static const Set<String> liveRequestTemplates = {'Deepgram', 'AssemblyAI', 'Google Gemini'};
 
   /// Available request config templates for custom STT configuration
   static Map<String, Map<String, dynamic>> get requestTemplates => {
@@ -303,6 +356,11 @@ class SttProviderConfig {
           apiKey: 'YOUR_API_KEY',
           language: 'multi',
           model: 'nova-3',
+        ),
+        'AssemblyAI': get(SttProvider.assemblyaiLive).buildRequestConfig(
+          apiKey: 'YOUR_API_KEY',
+          language: 'en',
+          model: 'best',
         ),
         'Fal.AI': get(SttProvider.falai).buildRequestConfig(
           apiKey: 'YOUR_API_KEY',
@@ -381,6 +439,35 @@ class SttProviderConfig {
           'sample_rate': '16000',
           'channels': '1',
         };
+        break;
+
+      case SttProvider.assemblyai:
+        config['url'] = 'https://api.assemblyai.com/v2/transcript';
+        config['headers'] = {
+          'Authorization': apiKey ?? '',
+          'Content-Type': 'application/json',
+        };
+        config['params'] = {
+          'speech_model': mdl.isNotEmpty ? mdl : 'best',
+          'language_code': lang,
+          'speaker_labels': 'true',
+          'punctuate': 'true',
+        };
+        break;
+
+      case SttProvider.assemblyaiLive:
+        config['url'] = 'wss://api.assemblyai.com/v2/realtime/ws';
+        config['headers'] = {'Authorization': apiKey ?? ''};
+        config['params'] = {
+          'speech_model': mdl.isNotEmpty ? mdl : 'best',
+          'sample_rate': '16000',
+          'encoding': 'pcm_s16le',
+          'word_boost': '[]',
+        };
+        // Add language code if not English
+        if (lang != 'en') {
+          config['params']['language_code'] = lang;
+        }
         break;
 
       case SttProvider.falai:

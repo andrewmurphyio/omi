@@ -65,6 +65,7 @@ from utils.stt.streaming import (
     process_audio_dg,
     process_audio_soniox,
     process_audio_speechmatics,
+    process_audio_assemblyai,
     send_initial_file_path,
 )
 from utils.subscription import has_transcription_credits
@@ -577,6 +578,8 @@ async def _listen(
     speechmatics_socket = None
     deepgram_socket = None
     deepgram_socket2 = None
+    assemblyai_socket = None
+    assemblyai_socket2 = None
     speech_profile_duration = 0
 
     realtime_segment_buffers = []
@@ -593,6 +596,8 @@ async def _listen(
         nonlocal speechmatics_socket
         nonlocal deepgram_socket
         nonlocal deepgram_socket2
+        nonlocal assemblyai_socket
+        nonlocal assemblyai_socket2
         nonlocal speech_profile_duration
         nonlocal speech_profile_processed
         try:
@@ -678,6 +683,26 @@ async def _listen(
                 if speech_profile_duration:
                     safe_create_task(send_initial_file_path(file_path, speechmatics_socket.send))
                     print('speech_profile speechmatics duration', speech_profile_duration, uid, session_id)
+
+            # ASSEMBLYAI
+            elif stt_service == STTService.assemblyai:
+                assemblyai_socket = await process_audio_assemblyai(
+                    stream_transcript,
+                    stt_language,
+                    sample_rate,
+                    preseconds=speech_profile_duration,
+                    model=stt_model,
+                )
+                if speech_profile_duration:
+                    assemblyai_socket2 = await process_audio_assemblyai(
+                        stream_transcript, stt_language, sample_rate, model=stt_model
+                    )
+
+                    async def assemblyai_socket_send(data):
+                        return await assemblyai_socket.send(data)
+
+                    safe_create_task(send_initial_file_path(file_path, assemblyai_socket_send))
+                    print('speech_profile assemblyai duration', speech_profile_duration, uid, session_id)
 
         except Exception as e:
             print(f"Initial processing error: {e}", uid, session_id)
@@ -1114,7 +1139,7 @@ async def _listen(
     elif codec == 'lc3':
         lc3_decoder = lc3.Decoder(lc3_frame_duration_us, sample_rate)
 
-    async def receive_data(dg_socket1, dg_socket2, soniox_socket, soniox_socket2, speechmatics_socket1):
+    async def receive_data(dg_socket1, dg_socket2, soniox_socket, soniox_socket2, speechmatics_socket1, assemblyai_socket1, assemblyai_socket2):
         nonlocal websocket_active, websocket_close_code, last_audio_received_time, current_conversation_id
         nonlocal realtime_photo_buffers, speech_profile_processed, speaker_to_person_map, first_audio_byte_timestamp, last_usage_record_timestamp
 
@@ -1199,6 +1224,22 @@ async def _listen(
                                     speech_profile_processed = True
                             else:
                                 dg_socket2.send(data)
+
+                        if assemblyai_socket1 is not None:
+                            elapsed_seconds = time.time() - timer_start
+                            if elapsed_seconds > speech_profile_duration or not assemblyai_socket2:
+                                # AssemblyAI expects base64 encoded audio in JSON format
+                                import base64
+                                audio_data = base64.b64encode(data).decode('utf-8')
+                                await assemblyai_socket1.send(json.dumps({'audio_data': audio_data}))
+                                if assemblyai_socket2:
+                                    print('Killing assemblyai_socket2', uid, session_id)
+                                    await assemblyai_socket2.close()
+                                    assemblyai_socket2 = None
+                                    speech_profile_processed = True
+                            else:
+                                audio_data = base64.b64encode(data).decode('utf-8')
+                                await assemblyai_socket2.send(json.dumps({'audio_data': audio_data}))
 
                     if audio_bytes_send is not None:
                         audio_bytes_send(data)
@@ -1285,7 +1326,7 @@ async def _listen(
 
         # Tasks
         data_process_task = asyncio.create_task(
-            receive_data(deepgram_socket, deepgram_socket2, soniox_socket, soniox_socket2, speechmatics_socket)
+            receive_data(deepgram_socket, deepgram_socket2, soniox_socket, soniox_socket2, speechmatics_socket, assemblyai_socket, assemblyai_socket2)
         )
         stream_transcript_task = asyncio.create_task(stream_transcript_process())
         record_usage_task = asyncio.create_task(_record_usage_periodically())
@@ -1324,6 +1365,10 @@ async def _listen(
                 await soniox_socket2.close()
             if speechmatics_socket:
                 await speechmatics_socket.close()
+            if assemblyai_socket:
+                await assemblyai_socket.close()
+            if assemblyai_socket2:
+                await assemblyai_socket2.close()
         except Exception as e:
             print(f"Error closing STT sockets: {e}", uid, session_id)
 
